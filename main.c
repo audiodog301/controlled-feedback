@@ -11,19 +11,26 @@
 typedef struct {
   float buffer_l[BUFFER_SIZE];
   float buffer_r[BUFFER_SIZE];
+  float prior_l;
+  float prior_r;
   size_t input;
-  size_t output;
+  _Atomic size_t output;
 } delay_t;
 
 typedef struct {
   _Atomic double amp;
+  _Atomic double feedback;
 
   delay_t delay;
-  
-  double phase;
-  double freq;
-  double sample_rate;
 } engine_t;
+
+void delay_set_time_samples(delay_t* delay, int samples) {
+  atomic_store(&delay->output, (delay->input - samples) % BUFFER_SIZE);
+}
+
+float clip(float in) {
+  return fmaxf(-1.0, fminf(in, 1.0));
+}
 
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
   
@@ -32,25 +39,32 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
   float* interleaved_input = (float*)pInput;
   
   for (int i = 0; i < frameCount; ++i) {
-    float current_sample = (float)(sin(engine->phase)*atomic_load(&engine->amp));
-
-    engine->phase += (2.0 * 3.14159 * FREQ) / SAMPLE_RATE;
-
     for (int channel = 0; channel < 2; ++channel) {
       if (channel == 0) { //case: left channel
-	engine->delay.buffer_l[engine->delay.input] = *interleaved_input;
-	*interleaved_samples = (current_sample * 0.2) + engine->delay.buffer_l[engine->delay.output];
+	engine->delay.buffer_l[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_l);
+	*interleaved_samples = clip(engine->delay.buffer_l[atomic_load(&engine->delay.output)] * atomic_load(&engine->amp));
       } else { //case: right channel
-	engine->delay.buffer_r[engine->delay.input] = *interleaved_input;
-	*interleaved_samples = (current_sample * 0.2) + engine->delay.buffer_r[engine->delay.output];
+	engine->delay.buffer_r[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_r);
+	*interleaved_samples = clip(engine->delay.buffer_r[atomic_load(&engine->delay.output)] * atomic_load(&engine->amp));
       }
 
       interleaved_samples++;
       interleaved_input++;
     }
 
+    if (*interleaved_samples > 0.9) {
+      atomic_store(&engine->feedback, 0.0);
+    } else if (*interleaved_samples > 0.7) {
+      atomic_store(&engine->feedback, 0.4);
+    } else {
+      atomic_fetch_add(&engine->feedback, 0.0001);
+    }
+
+    engine->delay.prior_l = engine->delay.buffer_l[engine->delay.output];
+    engine->delay.prior_r = engine->delay.buffer_r[engine->delay.output];
+
     engine->delay.input = (engine->delay.input + 1)%BUFFER_SIZE;
-    engine->delay.output = (engine->delay.output + 1)%BUFFER_SIZE;
+    atomic_store(&engine->delay.output, (atomic_load(&engine->delay.output) + 1)%BUFFER_SIZE);
   }
 }
 
@@ -58,20 +72,20 @@ int main(int argc, char** argv) {
   printf("hello, feedback!\n");
 
   engine_t engine = {
-    .phase = 0.0,
-    .freq = FREQ,
-    .sample_rate = SAMPLE_RATE,
-
     .delay = {
       .buffer_l = {0.0},
       .buffer_r = {0.0},
+      .prior_l = 0.0,
+      .prior_r = 0.0,
 
       .input = 0,
-      .output = 24000,
+      .output = 0,
     }
   };
 
   atomic_store(&engine.amp, 0.5);
+  atomic_store(&engine.feedback, 0.0);
+  delay_set_time_samples(&engine.delay, 24000);
   
   ma_device_config config = ma_device_config_init(ma_device_type_duplex);
   config.playback.format = ma_format_f32;
@@ -89,13 +103,17 @@ int main(int argc, char** argv) {
 
   ma_device_start(&device);
 
-  double stored_amp = 0.0;
-
+  double stored_amp;
+  double stored_feedback;
+  int stored_delay_time;
+  
   while (1) {
-    printf("volume: ");
-    scanf("%lf", &stored_amp);
+    printf("volume, feedback, delay time: ");
+    scanf("%lf %lf %d", &stored_amp, &stored_feedback, &stored_delay_time);
     
     atomic_store(&engine.amp, stored_amp);
+    atomic_store(&engine.feedback, stored_feedback);
+    delay_set_time_samples(&engine.delay, stored_delay_time);
   }
 
   ma_device_uninit(&device);
