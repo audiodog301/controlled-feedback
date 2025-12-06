@@ -37,8 +37,20 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
     engine->phase += (2.0 * 3.14159 * FREQ) / SAMPLE_RATE;
 
     for (int channel = 0; channel < 2; ++channel) {
-      *interleaved_samples++ = (current_sample * 0.2) + *interleaved_input++;
+      if (channel == 0) { //case: left channel
+	engine->delay.buffer_l[engine->delay.input] = *interleaved_input;
+	*interleaved_samples = (current_sample * 0.2) + engine->delay.buffer_l[engine->delay.output];
+      } else { //case: right channel
+	engine->delay.buffer_r[engine->delay.input] = *interleaved_input;
+	*interleaved_samples = (current_sample * 0.2) + engine->delay.buffer_r[engine->delay.output];
+      }
+
+      interleaved_samples++;
+      interleaved_input++;
     }
+
+    engine->delay.input = (engine->delay.input + 1)%BUFFER_SIZE;
+    engine->delay.output = (engine->delay.output + 1)%BUFFER_SIZE;
   }
 }
 
@@ -55,7 +67,7 @@ int main(int argc, char** argv) {
       .buffer_r = {0.0},
 
       .input = 0,
-      .output = 0
+      .output = 24000,
     }
   };
 
