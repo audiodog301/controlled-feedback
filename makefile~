@@ -1,0 +1,6 @@
+CC = gcc
+CFLAGS = -wall
+SOURCES = main.c
+EXECUTABLE = main
+
+all: $(EXECUTABLE)
