@@ -24,9 +24,6 @@ typedef struct {
   delay_t delay;
 
   double goal;
-  double start;
-  double goal_time;
-  double progress;
 } engine_t;
 
 void delay_set_time_samples(delay_t* delay, int samples) {
@@ -58,32 +55,24 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
     }
 
     if (*interleaved_samples > 0.95) {
-      engine->start = atomic_load(&engine->feedback);
-      engine->progress = 0;
       engine->goal = 0.01;
-      engine->goal_time = 0.1 * SAMPLE_RATE;
-    } else if (*interleaved_samples > 0.96) {
-      engine->start = atomic_load(&engine->feedback);
-      engine->progress = 0;
+    } else if (*interleaved_samples > 0.5) {
       engine->goal = 0.5;
-      engine->goal_time = SAMPLE_RATE;
     } else {
-      atomic_fetch_add(&engine->feedback, 0.5);
+      engine->goal = 1.0;
     }
 
-    if (engine->progress > engine->goal_time) {
-      engine->progress = engine->goal_time; //this is SUCH a kludge but it will work for now
+    if (atomic_load(&engine->feedback) < engine->goal) {
+      atomic_fetch_add(&engine->feedback, 1.0);
+    } else {
+      atomic_store(&engine->feedback, 0.5);
     }
-
-    atomic_store(&engine->feedback, (engine->progress / engine->goal_time)*(engine->goal - engine->start));
 
     engine->delay.prior_l = engine->delay.buffer_l[engine->delay.output];
     engine->delay.prior_r = engine->delay.buffer_r[engine->delay.output];
 
     engine->delay.input = (engine->delay.input + 1)%BUFFER_SIZE;
     atomic_store(&engine->delay.output, (atomic_load(&engine->delay.output) + 1)%BUFFER_SIZE);
-
-    engine->progress += 1.0;
   }
 }
 
@@ -101,10 +90,7 @@ int main(int argc, char** argv) {
       .output = 0,
     },
 
-    .goal = 0.5,
-    .start = 0.0,
-    .goal_time = 0.01*SAMPLE_RATE,
-    .progress = 0.0
+    .goal = 0.5
   };
 
   atomic_store(&engine.amp, 0.5);
