@@ -11,50 +11,50 @@
 typedef struct {
   float buffer_l[BUFFER_SIZE];
   float buffer_r[BUFFER_SIZE];
-  float prior_l;
+  float prior_l; // for feedback
   float prior_r;
-  size_t input;
-  _Atomic size_t output;
+  size_t input;  // buffer index for writing to
+  _Atomic size_t output; // buffer index for reading from (atomic because we change the delay time by moving around the output pointer)
 } delay_t;
 
-typedef struct {
+typedef struct { // this is where we store all of our state
   _Atomic double amp;
   _Atomic double feedback;
 
   delay_t delay;
 
-  double goal;
+  double goal; // what feedback value are we moving towards?
 } engine_t;
 
 void delay_set_time_samples(delay_t* delay, int samples) {
-  atomic_store(&delay->output, (delay->input - samples) % BUFFER_SIZE);
+  atomic_store(&delay->output, (delay->input - samples) % BUFFER_SIZE); // todo: bitwise operations instead of expensive mod
 }
 
-float clip(float in) {
+float clip(float in) { //bipolar clipping
   return fmaxf(-1.0, fminf(in, 1.0));
 }
 
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
   
-  engine_t* engine = (engine_t*)(pDevice->pUserData);
-  float* interleaved_samples = (float*)pOutput;
+  engine_t* engine = (engine_t*)(pDevice->pUserData); //we passed along a pointer to our state struct
+  float* interleaved_samples = (float*)pOutput; //pointers to our blocks of input and output samples
   float* interleaved_input = (float*)pInput;
   
-  for (int i = 0; i < frameCount; ++i) {
-    for (int channel = 0; channel < 2; ++channel) {
+  for (int i = 0; i < frameCount; ++i) { // loop through all of our frames
+    for (int channel = 0; channel < 2; ++channel) { // and then each sample per frame
       if (channel == 0) { //case: left channel
-	engine->delay.buffer_l[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_l);
-	*interleaved_samples = clip(engine->delay.buffer_l[atomic_load(&engine->delay.output)] * atomic_load(&engine->amp));
+	engine->delay.buffer_l[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_l); // write into our delay buffer
+	*interleaved_samples = clip(engine->delay.buffer_l[atomic_load(&engine->delay.output)] * atomic_load(&engine->amp)); // write our output samples
       } else { //case: right channel
-	engine->delay.buffer_r[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_r);
+	engine->delay.buffer_r[engine->delay.input] = clip(*interleaved_input + atomic_load(&engine->feedback)*engine->delay.prior_r); // ditto for right channel
 	*interleaved_samples = clip(engine->delay.buffer_r[atomic_load(&engine->delay.output)] * atomic_load(&engine->amp));
       }
 
-      interleaved_samples++;
+      interleaved_samples++; // iterate our pointers. we trust miniaudio that we won't segfault so long as our 2d loop goes through frameCount*channels samples
       interleaved_input++;
     }
 
-    if (*interleaved_samples > 0.95) {
+    if (*interleaved_samples > 0.95) { // NEED TO TUNE THIS
       engine->goal = 0.01;
     } else if (*interleaved_samples > 0.5) {
       engine->goal = 0.5;
@@ -62,12 +62,13 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
       engine->goal = 1.0;
     }
 
-    if (atomic_load(&engine->feedback) < engine->goal) {
+    if (atomic_load(&engine->feedback) < engine->goal) { // todo: implement proper slew-limited motion rather than these jumps
       atomic_fetch_add(&engine->feedback, 1.0);
     } else {
       atomic_store(&engine->feedback, 0.5);
     }
 
+    // update dsp state
     engine->delay.prior_l = engine->delay.buffer_l[engine->delay.output];
     engine->delay.prior_r = engine->delay.buffer_r[engine->delay.output];
 
@@ -117,9 +118,9 @@ int main(int argc, char** argv) {
   double stored_feedback;
   int stored_delay_time;
   
-  while (1) {
+  while (1) { // main loop :)
     printf("volume, feedback, delay time: ");
-    scanf("%lf %lf %d", &stored_amp, &stored_feedback, &stored_delay_time);
+    scanf("%lf %lf %d", &stored_amp, &stored_feedback, &stored_delay_time); // todo make this actually safe
     
     atomic_store(&engine.amp, stored_amp);
     atomic_store(&engine.feedback, stored_feedback);
